@@ -1,0 +1,216 @@
+<?php
+require_once(__DIR__ . '/../../database/db.php');
+
+class Product {
+    private $con;
+
+    public function __construct($con) {
+        $this->con = $con;
+    }
+
+    public function all() {
+        $sql = "SELECT p.product_id, p.name, p.description, p.price,
+                       IFNULL(p.stock_quantity, 0) AS stock_quantity,
+                       p.image_url, p.size_value, p.size_unit,
+                       p.expiration_date,
+                       c.category_id, c.category_name AS category,
+                       p.is_organic, p.is_seasonal
+                FROM product p
+                LEFT JOIN category c ON p.category_id = c.category_id";
+
+        $result = $this->con->query($sql);
+
+        $products = [];
+        while ($row = $result->fetch_assoc()) {
+            $tags = [];
+            if ($row['is_organic']) $tags[] = 'organic';
+            if ($row['is_seasonal']) $tags[] = 'seasonal';
+
+            $products[] = [
+                'id'              => $row['product_id'],
+                'name'            => $row['name'],
+                'description'     => $row['description'],
+                'category_id'     => $row['category_id'],
+                'category'        => $row['category'] ?? 'Uncategorized',
+                'price'           => floatval($row['price']),
+                'stock_quantity'  => floatval($row['stock_quantity']),
+                'img'             => $row['image_url'],
+                'size_value'      => floatval($row['size_value']),
+                'size_unit'       => $row['size_unit'],
+                'size'            => $row['size_value'] . ' ' . $row['size_unit'],
+                'expiration_date' => $row['expiration_date'],
+                'tags'            => $tags
+            ];
+        }
+
+        return $products;
+    }
+
+    public function create($data) {
+        $stmt = $this->con->prepare("
+            INSERT INTO product 
+                (name, description, price, stock_quantity, image_url, category_id, 
+                size_value, size_unit, is_organic, is_seasonal, expiration_date) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+
+        $stmt->bind_param(
+            "ssdisdsiiss",
+            $data['name'],            // s
+            $data['description'],     // s
+            $data['price'],           // d
+            $data['stock_quantity'],  // i
+            $data['image_url'],       // s
+            $data['category'],        // d / i (category_id)
+            $data['size_value'],      // d
+            $data['size_unit'],       // s
+            $data['is_organic'],      // i
+            $data['is_seasonal'],     // i
+            $data['expiration_date']  // s
+        );
+
+        if (!$stmt->execute()) {
+            throw new Exception("DB Error: " . $stmt->error);
+        }
+    }
+
+
+    public function update($data) {
+        // First get the current product data
+        $current = $this->find($data['id']);
+        if (!$current) {
+            throw new Exception("Product not found");
+        }
+
+        // Build dynamic update query - only update provided fields
+        $updateFields = [];
+        $types = "";
+        $values = [];
+
+        if (isset($data['name']) && $data['name'] !== '') {
+            $updateFields[] = "name=?";
+            $types .= "s";
+            $values[] = $data['name'];
+        }
+
+        if (isset($data['price'])) {
+            $updateFields[] = "price=?";
+            $types .= "d";
+            $values[] = $data['price'];
+        }
+
+        if (isset($data['stock_quantity'])) {
+            $updateFields[] = "stock_quantity=?";
+            $types .= "d";
+            $values[] = $data['stock_quantity'];
+        }
+
+        // Only update image_url if it's provided and not empty
+        if (isset($data['image_url']) && $data['image_url'] !== '') {
+            $updateFields[] = "image_url=?";
+            $types .= "s";
+            $values[] = $data['image_url'];
+        }
+
+        if (isset($data['category'])) {
+            $updateFields[] = "category_id=?";
+            $types .= "i";
+            $values[] = $data['category'];
+        }
+
+        if (isset($data['is_organic'])) {
+            $updateFields[] = "is_organic=?";
+            $types .= "i";
+            $values[] = $data['is_organic'];
+        }
+
+        if (isset($data['is_seasonal'])) {
+            $updateFields[] = "is_seasonal=?";
+            $types .= "i";
+            $values[] = $data['is_seasonal'];
+        }
+
+        if (isset($data['size_value'])) {
+            $updateFields[] = "size_value=?";
+            $types .= "d";
+            $values[] = $data['size_value'];
+        }
+
+        if (isset($data['size_unit'])) {
+            $updateFields[] = "size_unit=?";
+            $types .= "s";
+            $values[] = $data['size_unit'];
+        }
+
+        // Handle expiration_date (can be null)
+        if (isset($data['expiration_date'])) {
+            $updateFields[] = "expiration_date=?";
+            $types .= "s";
+            $values[] = $data['expiration_date'] ?: null;
+        }
+
+        // If no fields to update, return
+        if (empty($updateFields)) {
+            return;
+        }
+
+        // Add the ID for WHERE clause
+        $types .= "i";
+        $values[] = $data['id'];
+
+        $sql = "UPDATE product SET " . implode(", ", $updateFields) . " WHERE product_id=?";
+        $stmt = $this->con->prepare($sql);
+        $stmt->bind_param($types, ...$values);
+        $stmt->execute();
+    }
+
+    public function find($id) {
+        $stmt = $this->con->prepare("
+            SELECT p.product_id, p.name, p.description, p.price, p.stock_quantity, 
+                   p.image_url, p.size_value, p.size_unit, p.expiration_date,
+                   c.category_id, c.category_name AS category,
+                   p.is_organic, p.is_seasonal
+            FROM product p
+            LEFT JOIN category c ON p.category_id = c.category_id
+            WHERE p.product_id = ?
+        ");
+
+        $stmt->bind_param("i", $id);
+        $stmt->execute();
+        $result = $stmt->get_result()->fetch_assoc();
+
+        if (!$result) return null;
+
+        $tags = [];
+        if ($result['is_organic']) $tags[] = 'organic';
+        if ($result['is_seasonal']) $tags[] = 'seasonal';
+
+        return [
+            'id'              => $result['product_id'],
+            'name'            => $result['name'],
+            'description'     => $result['description'],
+            'category_id'     => $result['category_id'],
+            'category'        => $result['category'] ?? 'Uncategorized',
+            'price'           => floatval($result['price']),
+            'stock_quantity'  => floatval($result['stock_quantity']),
+            'img'             => $result['image_url'],
+            'size_value'      => floatval($result['size_value']),
+            'size_unit'       => $result['size_unit'],
+            'size'            => $result['size_value'] . ' ' . $result['size_unit'],
+            'expiration_date' => $result['expiration_date'],
+            'tags'            => $tags
+        ];
+    }
+
+    public function delete($id) {
+        $stmt = $this->con->prepare("DELETE FROM product WHERE product_id = ?");
+        $stmt->bind_param("i", $id);
+        return $stmt->execute();
+    }
+
+    public function deleteByName($name) {
+        $stmt = $this->con->prepare("DELETE FROM product WHERE name = ?");
+        $stmt->bind_param("s", $name);
+        return $stmt->execute();
+    }
+}
